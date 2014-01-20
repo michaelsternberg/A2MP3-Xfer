@@ -1,22 +1,21 @@
+            processor 6502
+            org $2000
 ;
 ; written for the dasm 2.20.11 assembler
 ;
 ; to build:
-; dasm usb.asm -f3 -Llist -oout
-; java -jar ac.jar -d mp3.dsk OUT
-; java -jar ac.jar -p mp3.dsk OUT BIN 0x2000 < out
+; dasm a2mp3.asm -f3 -La2mp3.list -oa2mp3
+; java -jar ac.jar -d A2MP3XFR.DSK A2MP3
+; java -jar ac.jar -p A2MP3XFR.DSK A2MP3 BIN 0x2000 < a2mp3
+; where ac.jar is from http://AppleCommander.sourceforge.net/
 ;
 ; Sends Vinculum commands ("V3A", "VP") from the A2 to the VMusic2
 ; MP3 player attached to the A2MP3 card. From, say, Applesoft BASIC
 ; poke a NULL-terminated Vinuculum command into memory starting at 
-; location CMD.
+; location CMD. Command output is sent to the page starting at STORAGE
+; unless SKIPREAD is set to non-zero. (Sometimes the command output 
+; causes a problem).
 ;
-; If a Vinculum command is expected to send a response (such as "DIR")
-; then precede the command with a "<" ("<DIR"). This will tell the
-; program to send the VMusic2 output to a buffer (STOREPTR)
-;
-            processor 6502
-            org $2000
 
 ; SLOT 3 = $C0B0
 ; SLOT 4 = $C0C0
@@ -28,31 +27,29 @@ ACIA_CMD    equ ACIA+2              ; 6551 COMMAND REGISTER
 ACIA_CTRL   equ ACIA+3              ; 6551 CONTROL REGISTER
 STORAGE     equ $2100               ; DATA BUFFER
 STOREPTR    equ $06                 ; ZERO-PAGE POINTER TO DATA BUFFER
+SKIPREAD    equ $20DE               ; FLAG TO SKIP JMP READ256 IN SENDSTR
 FIRSTCHAR   equ $20DF
 CMD         equ $20E0               ; POKE COMMMAND STRING INTO ADDR 8416 
 CMDPTR      equ $08
 COUT        equ $FDF0
-CROUT       equ $FD8E
-WAIT        equ $FCA8               ; DELAYS (26+27A+5A^2)/2 uSECS A=A REG
+PRBYTE      equ $FDDA
+BELL        equ $87
 
 LOCRPL      equ $03E3               ; LOCATE RWTS PARMLIST (IOB) SUBRTN
 RWTS        equ $03E9               ; RWTS MAIN ENTRY
 IOBPTR      equ $FD
 SECBUF      equ $2100
-SEEK        equ $00
-READ        equ $01
-WRITE       equ $02
 
 ;-------------------------------------------------------------------------------
 ; INITIALIZE THE 6551 CHIP
 ;-------------------------------------------------------------------------------
-INIT        LDA     #$00            ; SAVE ADDRESS OF STORAGE
+INIT        LDA     #<SECBUF        ; SAVE ADDRESS OF STORAGE (LSB)
             STA     STOREPTR        ; IN ZERO PAGE LOCATION $06,$07
-            LDA     #$21            
+            LDA     #>SECBUF        ; (MSB)
             STA     STOREPTR+1
-            LDA     #$E0            ; SAVE ADDRESS OF COMMAND STRING
+            LDA     #<CMD           ; SAVE ADDRESS OF COMMAND STRING (LSB)
             STA     CMDPTR          ; IN ZERO PAGE LOCATION $08, $09
-            LDA     #$20
+            LDA     #>CMD           ; (MSB)
             STA     CMDPTR+1
             LDA     #$10            ; SET BAUD RATE ($10=115K,$1E=9600)
             STA     ACIA_CTRL       ; ($10 = 16 x EXTERNAL CLOCK) 1 STOP BIT
@@ -63,14 +60,18 @@ INIT        LDA     #$00            ; SAVE ADDRESS OF STORAGE
 ;-------------------------------------------------------------------------------
 ; SEND STRING TO 6551
 ;-------------------------------------------------------------------------------
-SENDST      LDY     #$00
+SENDST      LDA     #$01
+            STA     FIRSTCHAR
+            LDY     #$00
 NEXTCH1     LDA     (CMDPTR),Y
             BEQ     EOS             ; ON ZERO, END OF STRING REACHED
             JSR     SENDCH
 SKIPCH      INY
             JMP     NEXTCH1
-EOS         RTS
-;EOS         JMP     READCH          ; IMMEDIATELY TRY READING FROM 6551
+EOS         LDA     SKIPREAD        ; BASIC PROGRAM MAY NEED TO SKIP READ256
+            BNE     SENDDONE
+            JMP     READ256         ; IMMEDIATELY TRY READING FROM 6551
+SENDDONE    RTS
 
 ;-------------------------------------------------------------------------------
 ; SEND CHAR TO 6551
@@ -92,28 +93,6 @@ NEXTCH2     LDA     (STOREPTR),Y
             RTS
 
 ;-------------------------------------------------------------------------------
-; READ CHAR FROM 6551
-;-------------------------------------------------------------------------------
-READCH      LDX     #$00
-            LDY     #$00
-NEXTCHAR    CPX     #$E9            ; NO RESPONSE IN A WHILE. ASSUME DONE
-            BEQ     BAIL
-            INX
-            LDA     ACIA_SR         ; TEST "RECEIVER DATA REGISTER FULL" FLG
-            AND     #$08            ; IN STATUS REG (BIT3) 0=NEXTCHAR 1=FULL
-            BEQ     NEXTCHAR        ; WAIT FOR "FULL"
-            LDX     #$00
-            LDA     ACIA_DAT        ; GET CHAR FROM 6551
-            STA     (STOREPTR),Y    ; COPY CHAR TO STRING BUFFER
-            INY
-            BNE     NEXTCHAR        ; GET NEXT CHAR NOW IF Y < $FF
-            INC     STOREPTR+1      ; EXCEEDED $FF BYTES, INCREMENT PAGE
-            JMP     NEXTCHAR        ; GET NEXT CHAR
-BAIL        LDA     #$00             
-            STA     (STOREPTR),Y    ; APPEND TERMINATOR TO STRING BUFFER
-            RTS
-
-;-------------------------------------------------------------------------------
 ; READ 256 BYTES
 ;-------------------------------------------------------------------------------
 READ256     LDX     #$00
@@ -124,48 +103,49 @@ NEXTCHAR1   CPX     #$E9
             LDA     ACIA_SR
             AND     #$08
             BEQ     NEXTCHAR1
+            LDX     #$00
             LDA     ACIA_DAT
             STA     (STOREPTR),Y
+            LDA     FIRSTCHAR
+            BNE     SKIPIT
             INY
             BNE     NEXTCHAR1       ; UNTIL 256 BYTES, Y <> $00
 BAIL1       RTS
 
+SKIPIT      LDA     #$00            ; VERY FIRST CHAR FROM OUTPUT IS TRASH
+            STA     FIRSTCHAR       ; I WANT TO SKIP IT SO
+            JMP     NEXTCHAR1
+
 ;-------------------------------------------------------------------------------
-; SWAP PAIRS OF BYTES IN PAGE (A9 00 B8 01...) BECOMES (00 A9 01 B8...)
+; GET THE ADDRESS OF THE INPUT/OUTPUT CONTROL BLOCK (IOB)
+; AFTER CALLING 03E3 A = MSB of IOB, Y = LSB of IOB
 ;-------------------------------------------------------------------------------
-SWAP256     LDY     #$00
-NEXTCHAR2   LDA     (STOREPTR),Y
-            TAX     
-            INY
-            LDA     (STOREPTR),Y
-            DEY 
-            STA     (STOREPTR),Y
-            TXA
-            INY
-            STA     (STOREPTR),Y
-            INY
-            BNE     NEXTCHAR2       ; UNTIL 256 BYTES, Y <> $00
+GETIOB      JSR     LOCRPL          ; CALL TO GET ADDRESS OF IOB
+            STY     IOBPTR          ; Y = LSB OF IOB
+            STA     IOBPTR + 1      ; A = MSB OF IOB
             RTS
 
 ;-------------------------------------------------------------------------------
 ; GET THE ADDRESS OF THE INPUT/OUTPUT CONTROL BLOCK (IOB)
 ; AFTER CALLING 03E3 A = MSB of IOB, Y = LSB of IOB
 ;-------------------------------------------------------------------------------
-GETIOB      JSR LOCRPL              ; CALL TO GET ADDRESS OF IOB
-            STY IOBPTR              ; Y = LSB OF IOB
-            STA IOBPTR + 1          ; A = MSB OF IOB
-            RTS
-
-;-------------------------------------------------------------------------------
-; GET THE ADDRESS OF THE INPUT/OUTPUT CONTROL BLOCK (IOB)
-; AFTER CALLING 03E3 A = MSB of IOB, Y = LSB of IOB
-;-------------------------------------------------------------------------------
-CALLRWTS    LDY IOBPTR
-            LDA IOBPTR + 1
-            JSR $03D9
-            LDA #$00                ; RWTS USES A MEM LOC SHARED WITH MONITOR
-            STA $0048               ; RESET IT TO 0 AFTER CALLING RWTS
-            RTS
+CALLRWTS    JSR     LOCRPL          ; CALL TO GET ADDRESS OF IOB
+            JSR     $03D9
+            LDA     #$00            ; RWTS USES A MEM LOC SHARED WITH MONITOR
+            STA     $0048           ; RESET IT TO 0 AFTER CALLING RWTS
+            BCC     EXITRWTS       ; ON RETURN FROM RWTS CARRY SET IF ERROR
+            LDA     #BELL           ; BEEP AND PRINT RC=$xx
+            JSR     COUT
+            LDA     #'R
+            JSR     COUT
+            LDA     #'C
+            JSR     COUT
+            LDA     #'=
+            JSR     COUT
+            LDY     #$0D
+            LDA     (IOBPTR),Y
+            JSR     PRBYTE
+EXITRWTS    RTS
 
 ;-------------------------------------------------------------------------------
 ; END OF FILE

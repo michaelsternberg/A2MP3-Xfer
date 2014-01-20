@@ -8,4 +8,4 @@ Current limitations:
   * No validation (Currently operates in "hope for the best" mode)
   * Use at own risk - Do not try with any diskettes precious to you
 
-Please note. This was created during the Retrochallenge 2014 Winter Warmup, so there may be some rough edges.
+Please note. If you don't have an A2MP3 card installed in a real Apple II, this will do nothing for you.

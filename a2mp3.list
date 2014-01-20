@@ -1,0 +1,153 @@
+------- FILE a2mp3.asm LEVEL 1 PASS 2
+      1  20a4					      processor	6502
+      2  2000					      org	$2000
+      3  2000							;
+      4  2000							; written for the dasm 2.20.11 assembler
+      5  2000							;
+      6  2000							; to build:
+      7  2000							; dasm a2mp3.asm -f3 -La2mp3.list -oa2mp3
+      8  2000							; java -jar ac.jar -d A2MP3XFR.DSK A2MP3
+      9  2000							; java -jar ac.jar -p A2MP3XFR.DSK A2MP3 BIN 0x2000 < a2mp3
+     10  2000							; where ac.jar is from http://AppleCommander.sourceforge.net/
+     11  2000							;
+     12  2000							; Sends Vinculum commands ("V3A", "VP") from the A2 to the VMusic2
+     13  2000							; MP3 player attached to the A2MP3 card. From, say, Applesoft BASIC
+     14  2000							; poke a NULL-terminated Vinuculum command into memory starting at
+     15  2000							; location CMD. Command output is sent to the page starting at STORAGE
+     16  2000							; unless SKIPREAD is set to non-zero. (Sometimes the command output
+     17  2000							; causes a problem).
+     18  2000							;
+     19  2000
+     20  2000							; SLOT 3 = $C0B0
+     21  2000							; SLOT 4 = $C0C0
+     22  2000
+     23  2000		       c0 b0	   ACIA       equ	$C0B0
+     24  2000		       c0 b0	   ACIA_DAT   equ	ACIA	; 6551 DATA REGISTER
+     25  2000		       c0 b1	   ACIA_SR    equ	ACIA+1	; 6551 STATUS REGISTER
+     26  2000		       c0 b2	   ACIA_CMD   equ	ACIA+2	; 6551 COMMAND REGISTER
+     27  2000		       c0 b3	   ACIA_CTRL  equ	ACIA+3	; 6551 CONTROL REGISTER
+     28  2000		       21 00	   STORAGE    equ	$2100	; DATA BUFFER
+     29  2000		       00 06	   STOREPTR   equ	$06	; ZERO-PAGE POINTER TO DATA BUFFER
+     30  2000		       20 de	   SKIPREAD   equ	$20DE	; FLAG TO SKIP JMP READ256 IN SENDSTR
+     31  2000		       20 df	   FIRSTCHAR  equ	$20DF
+     32  2000		       20 e0	   CMD	      equ	$20E0	; POKE COMMMAND STRING INTO ADDR 8416
+     33  2000		       00 08	   CMDPTR     equ	$08
+     34  2000		       fd f0	   COUT       equ	$FDF0
+     35  2000		       fd da	   PRBYTE     equ	$FDDA
+     36  2000		       00 87	   BELL       equ	$87
+     37  2000
+     38  2000		       03 e3	   LOCRPL     equ	$03E3	; LOCATE RWTS PARMLIST (IOB) SUBRTN
+     39  2000		       03 e9	   RWTS       equ	$03E9	; RWTS MAIN ENTRY
+     40  2000		       00 fd	   IOBPTR     equ	$FD
+     41  2000		       21 00	   SECBUF     equ	$2100
+     42  2000
+     43  2000							;-------------------------------------------------------------------------------
+     44  2000							; INITIALIZE THE 6551 CHIP
+     45  2000							;-------------------------------------------------------------------------------
+     46  2000		       a9 00	   INIT       LDA	#<SECBUF	; SAVE ADDRESS OF STORAGE (LSB)
+     47  2002		       85 06		      STA	STOREPTR	; IN ZERO PAGE LOCATION $06,$07
+     48  2004		       a9 21		      LDA	#>SECBUF	; (MSB)
+     49  2006		       85 07		      STA	STOREPTR+1
+     50  2008		       a9 e0		      LDA	#<CMD	; SAVE ADDRESS OF COMMAND STRING (LSB)
+     51  200a		       85 08		      STA	CMDPTR	; IN ZERO PAGE LOCATION $08, $09
+     52  200c		       a9 20		      LDA	#>CMD	; (MSB)
+     53  200e		       85 09		      STA	CMDPTR+1
+     54  2010		       a9 10		      LDA	#$10	; SET BAUD RATE ($10=115K,$1E=9600)
+     55  2012		       8d b3 c0 	      STA	ACIA_CTRL	; ($10 = 16 x EXTERNAL CLOCK) 1 STOP BIT
+     56  2015		       a9 0b		      LDA	#$0B	; PARITY DISABLED, TX+RX IRQ DISABLED, DTR READY
+     57  2017		       8d b2 c0 	      STA	ACIA_CMD	; STORE IN 6551 COMMAND REGISTER
+     58  201a		       60		      RTS
+     59  201b
+     60  201b							;-------------------------------------------------------------------------------
+     61  201b							; SEND STRING TO 6551
+     62  201b							;-------------------------------------------------------------------------------
+     63  201b		       a9 01	   SENDST     LDA	#$01
+     64  201d		       8d df 20 	      STA	FIRSTCHAR
+     65  2020		       a0 00		      LDY	#$00
+     66  2022		       b1 08	   NEXTCH1    LDA	(CMDPTR),Y
+     67  2024		       f0 07		      BEQ	EOS	; ON ZERO, END OF STRING REACHED
+     68  2026		       20 36 20 	      JSR	SENDCH
+     69  2029		       c8	   SKIPCH     INY
+     70  202a		       4c 22 20 	      JMP	NEXTCH1
+     71  202d		       ad de 20    EOS	      LDA	SKIPREAD	; BASIC PROGRAM MAY NEED TO SKIP READ256
+     72  2030		       d0 03		      BNE	SENDDONE
+     73  2032		       4c 4c 20 	      JMP	READ256	; IMMEDIATELY TRY READING FROM 6551
+     74  2035		       60	   SENDDONE   RTS
+     75  2036
+     76  2036							;-------------------------------------------------------------------------------
+     77  2036							; SEND CHAR TO 6551
+     78  2036							;-------------------------------------------------------------------------------
+     79  2036		       8d b0 c0    SENDCH     STA	ACIA_DAT	; SEND BYTE TO 6551 DATA REGISTER
+     80  2039		       ad b1 c0    NOT_EMPTY  LDA	ACIA_SR	; TEST "TRANSMITTER DATA REGISTER EMPTY" FLG
+     81  203c		       29 10		      AND	#$10	; IN STATUS REG (BIT4) 0=NOT_EMPTY 1=EMPTY
+     82  203e		       f0 f9		      BEQ	NOT_EMPTY	; WAIT FOR "EMPTY"
+     83  2040		       60		      RTS
+     84  2041
+     85  2041							;-------------------------------------------------------------------------------
+     86  2041							; SEND 256 CHARS TO 6551
+     87  2041							;-------------------------------------------------------------------------------
+     88  2041		       a0 00	   SEND256    LDY	#$00
+     89  2043		       b1 06	   NEXTCH2    LDA	(STOREPTR),Y
+     90  2045		       20 36 20 	      JSR	SENDCH
+     91  2048		       c8		      INY
+     92  2049		       d0 f8		      BNE	NEXTCH2	; Y WILL HIT 0 AGAIN AFTER 256 LOOPS
+     93  204b		       60		      RTS
+     94  204c
+     95  204c							;-------------------------------------------------------------------------------
+     96  204c							; READ 256 BYTES
+     97  204c							;-------------------------------------------------------------------------------
+     98  204c		       a2 00	   READ256    LDX	#$00
+     99  204e		       a0 00		      LDY	#$00
+    100  2050		       e0 e9	   NEXTCHAR1  CPX	#$E9
+    101  2052		       f0 17		      BEQ	BAIL1
+    102  2054		       e8		      INX
+    103  2055		       ad b1 c0 	      LDA	ACIA_SR
+    104  2058		       29 08		      AND	#$08
+    105  205a		       f0 f4		      BEQ	NEXTCHAR1
+    106  205c		       a2 00		      LDX	#$00
+    107  205e		       ad b0 c0 	      LDA	ACIA_DAT
+    108  2061		       91 06		      STA	(STOREPTR),Y
+    109  2063		       ad df 20 	      LDA	FIRSTCHAR
+    110  2066		       d0 04		      BNE	SKIPIT
+    111  2068		       c8		      INY
+    112  2069		       d0 e5		      BNE	NEXTCHAR1	; UNTIL 256 BYTES, Y <> $00
+    113  206b		       60	   BAIL1      RTS
+    114  206c
+    115  206c		       a9 00	   SKIPIT     LDA	#$00	; VERY FIRST CHAR FROM OUTPUT IS TRASH
+    116  206e		       8d df 20 	      STA	FIRSTCHAR	; I WANT TO SKIP IT SO
+    117  2071		       4c 50 20 	      JMP	NEXTCHAR1
+    118  2074
+    119  2074							;-------------------------------------------------------------------------------
+    120  2074							; GET THE ADDRESS OF THE INPUT/OUTPUT CONTROL BLOCK (IOB)
+    121  2074							; AFTER CALLING 03E3 A = MSB of IOB, Y = LSB of IOB
+    122  2074							;-------------------------------------------------------------------------------
+    123  2074		       20 e3 03    GETIOB     JSR	LOCRPL	; CALL TO GET ADDRESS OF IOB
+    124  2077		       84 fd		      STY	IOBPTR	; Y = LSB OF IOB
+    125  2079		       85 fe		      STA	IOBPTR + 1	; A = MSB OF IOB
+    126  207b		       60		      RTS
+    127  207c
+    128  207c							;-------------------------------------------------------------------------------
+    129  207c							; GET THE ADDRESS OF THE INPUT/OUTPUT CONTROL BLOCK (IOB)
+    130  207c							; AFTER CALLING 03E3 A = MSB of IOB, Y = LSB of IOB
+    131  207c							;-------------------------------------------------------------------------------
+    132  207c		       20 e3 03    CALLRWTS   JSR	LOCRPL	; CALL TO GET ADDRESS OF IOB
+    133  207f		       20 d9 03 	      JSR	$03D9
+    134  2082		       a9 00		      LDA	#$00	; RWTS USES A MEM LOC SHARED WITH MONITOR
+    135  2084		       85 48		      STA	$0048	; RESET IT TO 0 AFTER CALLING RWTS
+    136  2086		       90 1b		      BCC	EXITRWTS	; ON RETURN FROM RWTS CARRY SET IF ERROR
+    137  2088		       a9 87		      LDA	#BELL	; BEEP AND PRINT RC=$xx
+    138  208a		       20 f0 fd 	      JSR	COUT
+    139  208d		       a9 52		      LDA	#'R
+    140  208f		       20 f0 fd 	      JSR	COUT
+    141  2092		       a9 43		      LDA	#'C
+    142  2094		       20 f0 fd 	      JSR	COUT
+    143  2097		       a9 3d		      LDA	#'=
+    144  2099		       20 f0 fd 	      JSR	COUT
+    145  209c		       a0 0d		      LDY	#$0D
+    146  209e		       b1 fd		      LDA	(IOBPTR),Y
+    147  20a0		       20 da fd 	      JSR	PRBYTE
+    148  20a3		       60	   EXITRWTS   RTS
+    149  20a4
+    150  20a4							;-------------------------------------------------------------------------------
+    151  20a4							; END OF FILE
+    152  20a4							;-------------------------------------------------------------------------------
